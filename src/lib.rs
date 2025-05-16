@@ -1,11 +1,13 @@
+pub mod rules;
+
 wit_bindgen::generate!({
-    world: "target-resolver",
+    world: "rule-set",
     path: "pb-wit/wit"
 });
 
-struct HttpResolver;
+struct StdRules;
 
-impl exports::pb::rules::resolver::Guest for HttpResolver {
+impl exports::pb::rules::resolver::Guest for StdRules {
     fn additional_interest_glob() -> Option<_rt::String> {
         let location = pb::rules::logging::Location {
             file_path: None,
@@ -38,4 +40,4 @@ impl exports::pb::rules::resolver::Guest for HttpResolver {
     }
 }
 
-export!(HttpResolver);
+export!(StdRules);
