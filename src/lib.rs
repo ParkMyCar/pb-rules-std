@@ -5,6 +5,8 @@ wit_bindgen::generate!({
     path: "pb-wit/wit"
 });
 
+pub struct MyWaker;
+
 struct StdRules;
 
 impl exports::pb::rules::resolver::Guest for StdRules {
