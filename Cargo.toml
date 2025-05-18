@@ -8,4 +8,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 futures = "0.3"
-wit-bindgen = "0.42"
+pb-rules-sdk = { path = "../pb/pb-rules-sdk" }
+tracing = "0.1"
