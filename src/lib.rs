@@ -1,5 +1,8 @@
 use futures::{StreamExt, future::BoxFuture};
-use pb_rules_sdk::{futures::ByteStreamWrapper, rules::Rule};
+use pb_rules_sdk::{
+    futures::{ByteStreamWrapper, FutureCompat2},
+    rules::Rule,
+};
 
 struct StdRules;
 
@@ -42,7 +45,7 @@ impl pb_rules_sdk::rules::Rule for HttpRule {
             };
 
             let mut body = Vec::new();
-            let response = context.actions().http().get(&request);
+            let response = context.actions().http().get(&request).compat().await;
             let mut body_stream = ByteStreamWrapper::new(response.body());
 
             while let Some(val) = body_stream.next().await {
