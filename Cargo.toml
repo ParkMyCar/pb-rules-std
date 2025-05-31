@@ -7,10 +7,15 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
+anyhow = "1"
 async-compression = { version = "0.4", features = ["tokio", "brotli", "gzip", "xz", "zstd"] }
 bytes = "1"
+content_disposition = "0.4"
 futures = "0.3"
+headers = "0.4"
 pb-rules-sdk = { path = "../pb/pb-rules-sdk" }
+smallvec = "1"
 tar = "0.4"
+tokio = { version = "1", features = ["io-util"], default-features = false }
 tokio-util = { version = "0.7", features = ["io"], default-features = false }
 tracing = "0.1"
