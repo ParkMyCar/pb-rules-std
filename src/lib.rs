@@ -1,9 +1,12 @@
-use async_compression::tokio::bufread::XzDecoder;
-use futures::{StreamExt, future::BoxFuture};
+use std::io::Read;
+
+use async_compression::tokio::bufread::ZstdDecoder;
+use futures::{StreamExt, future::LocalBoxFuture};
 use pb_rules_sdk::{
     futures::{ByteStreamWrapper, FutureCompat2},
     rules::Rule,
 };
+use tar::EntryType;
 
 struct StdRules;
 
@@ -38,10 +41,10 @@ impl pb_rules_sdk::rules::Rule for HttpRule {
         &self,
         _attrs: pb_rules_sdk::rules::Attributes,
         context: pb_rules_sdk::pb::rules::context::Ctx,
-    ) -> BoxFuture<'static, Vec<pb_rules_sdk::pb::rules::types::Provider>> {
+    ) -> LocalBoxFuture<'static, Vec<pb_rules_sdk::pb::rules::types::Provider>> {
         Box::pin(async move {
             let request = pb_rules_sdk::pb::rules::http::Request {
-                url: "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.6/LLVM-20.1.6-Linux-X64.tar.xz".into(),
+                url: "https://github.com/MaterializeInc/toolchains/releases/download/clang-19.1.6-2/darwin_aarch64.tar.zst".into(),
                 headers: vec![],
             };
 
@@ -49,43 +52,95 @@ impl pb_rules_sdk::rules::Rule for HttpRule {
             tracing::info!(headers = ?response.headers(), "response headers");
             let body_stream = ByteStreamWrapper::new(response.body());
 
+            // Create a temp file to download the archive into.
             let write_filesystem = context.actions().write_filesystem();
-
-            let repository = write_filesystem
-                .create_directory("testdir2")
+            let temp_file = write_filesystem
+                .create_file("http-temp")
                 .compat()
                 .await
-                .expect("failed to create directory");
-            let file = repository
-                .create_file("testfile")
-                .compat()
-                .await
-                .expect("failed to create test file");
-            let mut wrote_bytes = 0;
+                .expect("creating temp file for download");
 
+            // Decompress the data as we download it.
             let byte_stream = body_stream.map(|v| Ok::<_, std::io::Error>(bytes::Bytes::from(v)));
             let async_reader = tokio_util::io::StreamReader::new(byte_stream);
-            let reader = XzDecoder::new(async_reader);
-
+            let reader = ZstdDecoder::new(async_reader);
             let mut stream = tokio_util::io::ReaderStream::new(reader);
+
+            // Write the archive into a temp file.
             while let Some(val) = stream.next().await {
                 let val = val.unwrap();
-                wrote_bytes += val.len();
-                file.append(&val[..])
+                temp_file
+                    .append(&val[..])
                     .compat()
                     .await
                     .expect("failed to write content");
             }
 
-            file.close()
+            // Create a repository to reconstruct the tar archive into.
+            let repository = write_filesystem
+                .create_directory("darwin_aarch64")
                 .compat()
                 .await
-                .expect("failed to write content");
+                .expect("failed to create dir");
+
+            let mut archive = tar::Archive::new(temp_file.into_read().into_reader());
+            let entries = archive.entries().expect("failed to read entries");
+
+            for entry in entries {
+                let mut entry = entry.expect("failed entry");
+                let path = entry.path().expect("failed to read path");
+                let path = path.to_str().expect("non UTF-8 path");
+
+                match entry.header().entry_type() {
+                    EntryType::Directory => {
+                        tracing::trace!(?path, "creating directory");
+
+                        repository
+                            .create_directory(path)
+                            .compat()
+                            .await
+                            .expect("failed to create child dir");
+                    }
+                    EntryType::Regular => {
+                        tracing::trace!(?path, "creating file");
+
+                        let file = repository
+                            .create_file(path)
+                            .compat()
+                            .await
+                            .expect("failed to create child file");
+
+                        let mut buf = vec![0u8; 4096];
+                        loop {
+                            let bytes_read = entry.read(&mut buf[..]).expect("reading archive");
+
+                            // We're done!
+                            if bytes_read == 0 {
+                                file.close().compat().await.expect("failed to close file");
+                                break;
+                            }
+
+                            // Write into the repository.
+                            file.append(&buf[..bytes_read])
+                                .compat()
+                                .await
+                                .expect("failed to write file");
+                        }
+                    }
+                    other => {
+                        tracing::info!(?other, "skipping unsupported type");
+                    }
+                }
+
+                tracing::info!(path = ?entry.path(), "got entry");
+            }
 
             // Close the repository so it gets moved into place.
-            repository.close().compat().await.unwrap();
-
-            tracing::info!(%wrote_bytes, "got entire body");
+            repository
+                .close()
+                .compat()
+                .await
+                .expect("failed to close directory");
 
             vec![]
         })
