@@ -1,3 +1,4 @@
+use async_compression::tokio::bufread::XzDecoder;
 use futures::{StreamExt, future::BoxFuture};
 use pb_rules_sdk::{
     futures::{ByteStreamWrapper, FutureCompat2},
@@ -40,21 +41,51 @@ impl pb_rules_sdk::rules::Rule for HttpRule {
     ) -> BoxFuture<'static, Vec<pb_rules_sdk::pb::rules::types::Provider>> {
         Box::pin(async move {
             let request = pb_rules_sdk::pb::rules::http::Request {
-                url: "https://jsonplaceholder.typicode.com/comments".into(),
+                url: "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.6/LLVM-20.1.6-Linux-X64.tar.xz".into(),
                 headers: vec![],
             };
 
-            let mut body = Vec::new();
             let response = context.actions().http().get(&request).compat().await;
-            let mut body_stream = ByteStreamWrapper::new(response.body());
+            tracing::info!(headers = ?response.headers(), "response headers");
+            let body_stream = ByteStreamWrapper::new(response.body());
 
-            while let Some(val) = body_stream.next().await {
-                tracing::info!("new chunk {}, total {}", val.len(), body.len());
-                body.extend_from_slice(&val[..]);
+            let write_filesystem = context.actions().write_filesystem();
+
+            let repository = write_filesystem
+                .create_directory("testdir2")
+                .compat()
+                .await
+                .expect("failed to create directory");
+            let file = repository
+                .create_file("testfile")
+                .compat()
+                .await
+                .expect("failed to create test file");
+            let mut wrote_bytes = 0;
+
+            let byte_stream = body_stream.map(|v| Ok::<_, std::io::Error>(bytes::Bytes::from(v)));
+            let async_reader = tokio_util::io::StreamReader::new(byte_stream);
+            let reader = XzDecoder::new(async_reader);
+
+            let mut stream = tokio_util::io::ReaderStream::new(reader);
+            while let Some(val) = stream.next().await {
+                let val = val.unwrap();
+                wrote_bytes += val.len();
+                file.append(&val[..])
+                    .compat()
+                    .await
+                    .expect("failed to write content");
             }
 
-            let msg = String::from_utf8_lossy(&body[..]);
-            tracing::info!(%msg, "got entire body");
+            file.close()
+                .compat()
+                .await
+                .expect("failed to write content");
+
+            // Close the repository so it gets moved into place.
+            repository.close().compat().await.unwrap();
+
+            tracing::info!(%wrote_bytes, "got entire body");
 
             vec![]
         })
